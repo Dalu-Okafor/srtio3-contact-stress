@@ -148,5 +148,5 @@ in this script, nu = 0.24 is the default for both loading modes.
    using the nanoscratch technique and its application to thin solid films.
    *Journal of Materials Research*, 21(9), 2304-2313. Eqs. (1)-(6),
    pp. 2305-2306. https://doi.org/10.1557/JMR.2006.0277
-
+This software is released under the MIT License. See LICENSE for details.
 
