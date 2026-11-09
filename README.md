@@ -77,9 +77,20 @@ The bisection stationarity condition is derived from the cited Hertz
 stress expressions; it is not presented as a separately numbered equation
 in Johnson. `--steps` shows it and the intermediate numerical values.
 
-The complete final thesis equations were not supplied with this repository
-package; confirm their numbering and rounding against Section 5.3.3 before
-making a thesis release.
+### Correspondence with Section 5.3.3
+
+The equations were compared against the supplied Chapter 5 draft dated
+2026-10-12. The script reproduces the following expressions and coefficients:
+
+| Thesis equation | Script calculation |
+| --- | --- |
+| (5.2) | Frictionless indentation: `tau = 0.324047*p0` after rounding, for nu = 0.24 |
+| (5.3) | Scratching: `tau = (p0/2)*sqrt((A+B)^2 + 4*mu^2*C^2)` |
+| (5.4) | Scratching coefficients 0.324581 and 0.324747 for mu = 0.062 and 0.071, respectively, at nu = 0.24 |
+
+Calculations retain the unrounded coefficients internally. This comparison
+checks equations and numerical coefficients, not the underlying experimental
+data, the statistical averaging of friction measurements, or plotted values.
 
 ## Reproducibility Check
 
@@ -137,4 +148,5 @@ in this script, nu = 0.24 is the default for both loading modes.
    using the nanoscratch technique and its application to thin solid films.
    *Journal of Materials Research*, 21(9), 2304-2313. Eqs. (1)-(6),
    pp. 2305-2306. https://doi.org/10.1557/JMR.2006.0277
+
 
