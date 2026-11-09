@@ -1,0 +1,386 @@
+"""Appendix calculation for Section 5.3.3: indentation and scratching.
+
+Hertz reference: K. L. Johnson, Contact Mechanics (1985), Eq. (3.45).
+https://doi.org/10.1017/CBO9781139171731
+
+Run with --interactive to enter inputs, or --steps for worked calculations.
+Example: python lee_scratch_shear.py --interactive --steps
+No third-party packages are required (Python 3.9 or newer).
+
+The implementation follows Eqs. (1)-(6) in:
+
+    K. M. Lee and A. A. Polycarpou, Journal of Materials Research
+    21 (2006) 2304-2313. https://doi.org/10.1557/JMR.2006.0277
+
+Lee and Polycarpou use Hamilton's sliding-sphere stress field and assume,
+for Q/P < 0.3, that tangential force has negligible influence on the depth
+of initial subsurface yielding. Here Q/P is identified with the friction
+coefficient, mu. The depth ratio z/a is therefore found from the
+frictionless Hertz solution and the Lee correction is then evaluated there.
+
+All calculations are performed internally in SI units. The editable inputs
+below use the units in the thesis data: mN, GPa, and nm.
+"""
+
+from __future__ import annotations
+
+import argparse
+import math
+from dataclasses import dataclass
+
+
+# ---------------------------------------------------------------------------
+# EDITABLE INPUTS
+# Replace these example values with the values for each experiment.
+# ---------------------------------------------------------------------------
+NORMAL_LOADS_MN = [0.50]
+REDUCED_MODULUS_GPA = 225.0
+TIP_RADIUS_NM = 2000
+POISSON_RATIO = 0.24
+FRICTION_COEFFICIENT = 0.071
+# Figure-estimated representative values; replace with raw-data averages.
+MATERIAL_FRICTION = {"undoped": 0.062, "nb-doped": 0.071}
+
+
+@dataclass(frozen=True)
+class LeeResult:
+    load_mn: float
+    contact_radius_nm: float
+    maximum_pressure_gpa: float
+    depth_ratio: float
+    maximum_shear_depth_nm: float
+    hertz_tau_over_p0: float
+    lee_tau_over_p0: float
+    hertz_maximum_shear_gpa: float
+    lee_maximum_shear_gpa: float
+    friction_increase_percent: float
+
+
+def _hertz_stationarity_function(zeta: float, poisson_ratio: float) -> float:
+    """Derivative condition for maximum Hertzian principal shear stress."""
+    one_plus_zeta_squared = 1.0 + zeta**2
+    return (
+        (1.0 + poisson_ratio)
+        * (
+            math.atan(1.0 / zeta)
+            - zeta / one_plus_zeta_squared
+        )
+        - 3.0 * zeta / one_plus_zeta_squared**2
+    )
+
+
+def hertz_maximum_shear_depth_ratio(poisson_ratio: float) -> float:
+    """Solve zeta = z/a for maximum Hertzian shear by bisection."""
+    if not 0.0 <= poisson_ratio < 0.5:
+        raise ValueError("This implementation supports 0 <= nu < 0.5.")
+
+    lower = 1.0e-8
+    upper = 5.0
+    f_lower = _hertz_stationarity_function(lower, poisson_ratio)
+    f_upper = _hertz_stationarity_function(upper, poisson_ratio)
+
+    if f_lower * f_upper >= 0.0:
+        raise RuntimeError("Could not bracket the Hertzian depth solution.")
+
+    for _ in range(200):
+        midpoint = 0.5 * (lower + upper)
+        f_midpoint = _hertz_stationarity_function(midpoint, poisson_ratio)
+
+        if abs(f_midpoint) < 1.0e-14:
+            return midpoint
+        if f_lower * f_midpoint > 0.0:
+            lower = midpoint
+            f_lower = f_midpoint
+        else:
+            upper = midpoint
+
+    return 0.5 * (lower + upper)
+
+
+def lee_coefficients(
+    poisson_ratio: float,
+    friction_coefficient: float,
+    zeta: float,
+) -> tuple[float, float, float, float]:
+    """Return Lee's dimensionless A, B, C, and D coefficients."""
+    atan_term = math.atan(1.0 / zeta)
+    one_plus_zeta_squared = 1.0 + zeta**2
+
+    # Lee and Polycarpou (2006), Eq. (3).
+    a_coefficient = (
+        (1.0 + poisson_ratio) * (zeta * atan_term - 1.0)
+        + 1.0 / (2.0 * one_plus_zeta_squared)
+    )
+    b_coefficient = 1.0 / one_plus_zeta_squared
+    c_coefficient = (
+        -1.0
+        + 1.5 * zeta * atan_term
+        - zeta**2 / (2.0 * one_plus_zeta_squared)
+    )
+
+    # Lee and Polycarpou (2006), Eq. (4), with Q/P = mu.
+    d_coefficient = math.sqrt(
+        (a_coefficient + b_coefficient) ** 2
+        + 4.0 * friction_coefficient**2 * c_coefficient**2
+    )
+    return a_coefficient, b_coefficient, c_coefficient, d_coefficient
+
+
+def calculate_lee_shear_stress(
+    load_mn: float,
+    reduced_modulus_gpa: float,
+    tip_radius_nm: float,
+    poisson_ratio: float,
+    friction_coefficient: float,
+) -> LeeResult:
+    """Calculate Hertz and low-friction Lee shear stresses for one load."""
+    if load_mn <= 0.0:
+        raise ValueError("Normal load must be positive.")
+    if reduced_modulus_gpa <= 0.0:
+        raise ValueError("Reduced modulus must be positive.")
+    if tip_radius_nm <= 0.0:
+        raise ValueError("Tip radius must be positive.")
+    if not all(math.isfinite(x) for x in (
+        load_mn, reduced_modulus_gpa, tip_radius_nm,
+        poisson_ratio, friction_coefficient,
+    )):
+        raise ValueError("All inputs must be finite numbers.")
+    if not 0.0 <= friction_coefficient < 0.3:
+        raise ValueError(
+            "This script implements Lee's subsurface equation for 0 <= Q/P < 0.3. "
+            "Lee uses the surface-yield equations for Q/P >= 0.3."
+        )
+
+    load_n = load_mn * 1.0e-3
+    reduced_modulus_pa = reduced_modulus_gpa * 1.0e9
+    tip_radius_m = tip_radius_nm * 1.0e-9
+
+    contact_radius_m = (
+        3.0 * load_n * tip_radius_m / (4.0 * reduced_modulus_pa)
+    ) ** (1.0 / 3.0)
+    maximum_pressure_pa = 3.0 * load_n / (
+        2.0 * math.pi * contact_radius_m**2
+    )
+
+    zeta = hertz_maximum_shear_depth_ratio(poisson_ratio)
+    _, _, _, lee_d = lee_coefficients(
+        poisson_ratio, friction_coefficient, zeta
+    )
+    # Direct Hertz centerline stresses, independent of Lee's correction.
+    sigma_z_over_p0, sigma_r_over_p0 = hertz_centerline_stresses(
+        poisson_ratio, zeta
+    )
+
+    # Lee and Polycarpou (2006), Eq. (6): tau_max = p0 D / 2.
+    lee_tau_over_p0 = lee_d / 2.0
+    hertz_tau_over_p0 = abs(sigma_z_over_p0 - sigma_r_over_p0) / 2.0
+    lee_maximum_shear_pa = maximum_pressure_pa * lee_tau_over_p0
+    hertz_maximum_shear_pa = maximum_pressure_pa * hertz_tau_over_p0
+
+    return LeeResult(
+        load_mn=load_mn,
+        contact_radius_nm=contact_radius_m * 1.0e9,
+        maximum_pressure_gpa=maximum_pressure_pa / 1.0e9,
+        depth_ratio=zeta,
+        maximum_shear_depth_nm=zeta * contact_radius_m * 1.0e9,
+        hertz_tau_over_p0=hertz_tau_over_p0,
+        lee_tau_over_p0=lee_tau_over_p0,
+        hertz_maximum_shear_gpa=hertz_maximum_shear_pa / 1.0e9,
+        lee_maximum_shear_gpa=lee_maximum_shear_pa / 1.0e9,
+        friction_increase_percent=(
+            lee_maximum_shear_pa / hertz_maximum_shear_pa - 1.0
+        )
+        * 100.0,
+    )
+
+
+def hertz_centerline_stresses(nu: float, zeta: float) -> tuple[float, float]:
+    """Johnson Eq. (3.45): compression-negative axial/lateral stresses / p0."""
+    sigma_z = -1.0 / (1.0 + zeta**2)
+    sigma_r = -(
+        (1.0 + nu) * (1.0 - zeta * math.atan(1.0 / zeta))
+        - 1.0 / (2.0 * (1.0 + zeta**2))
+    )
+    return sigma_z, sigma_r
+
+
+def print_worked_steps(nu: float, mu: float) -> None:
+    """Print equations and their numerical evaluation without hiding coefficients."""
+    zeta = hertz_maximum_shear_depth_ratio(nu)
+    sz, sr = hertz_centerline_stresses(nu, zeta)
+    a, b, c, d = lee_coefficients(nu, mu, zeta)
+    print("\nWORKED COEFFICIENT CALCULATION (angles in radians)")
+    print("1. Set zeta = z/a and solve the Hertz derivative condition:")
+    print("   (1+nu)[atan(1/zeta)-zeta/(1+zeta^2)]")
+    print("       -3*zeta/(1+zeta^2)^2 = 0")
+    print(f"   Bisection gives zeta = {zeta:.12f} for nu = {nu:g}.")
+    print("2. Hertz centerline principal stresses (Johnson Eq. 3.45):")
+    print("   sigma_z/p0 = -1/(1+zeta^2)")
+    print("   sigma_r/p0 = -[(1+nu)(1-zeta*atan(1/zeta))")
+    print("                  -1/(2*(1+zeta^2))]")
+    print(f"   atan(1/zeta) = {math.atan(1/zeta):.12f}")
+    print(f"   sigma_z/p0 = {sz:.12f}; sigma_r/p0 = {sr:.12f}")
+    print("3. Hertz coefficient = abs(sigma_z/p0-sigma_r/p0)/2")
+    print(f"   tau_indentation/p0 = {abs(sz-sr)/2:.12f}")
+    print("4. Lee Eq. (3):")
+    print("   A = (1+nu)[zeta*atan(1/zeta)-1]+1/[2*(1+zeta^2)]")
+    print("   B = 1/(1+zeta^2)")
+    print("   C = -1+1.5*zeta*atan(1/zeta)-zeta^2/[2*(1+zeta^2)]")
+    print(f"   A = {a:.12f}; B = {b:.12f}; C = {c:.12f}")
+    print("5. Lee Eqs. (4)-(6): D = sqrt((A+B)^2+4*mu^2*C^2)")
+    print(f"   (A+B)^2 = {(a+b)**2:.12f}")
+    print(f"   4*mu^2*C^2 = {4*mu**2*c**2:.12f} (mu = {mu:g})")
+    print(f"   D = {d:.12f}; tau_scratching/p0 = D/2 = {d/2:.12f}")
+    print("6. For each load: P[N]=P[mN]*1e-3, E*[Pa]=E*[GPa]*1e9,")
+    print("   R[m]=R[nm]*1e-9; a=(3*P*R/(4*E*))^(1/3)")
+    print("   p0=3*P/(2*pi*a^2); z= zeta*a; tau=coefficient*p0.")
+    print("   Values of p0 and tau in Pa are divided by 1e9 to obtain GPa.")
+
+
+def print_reference_coefficients() -> None:
+    """Reproduce both the conventional nu=0.30 and SrTiO3 nu=0.24 cases."""
+    print("\nREFERENCE COEFFICIENTS (not alternative material inputs)")
+    print("nu | Hertz z/a | Hertz tau/p0 | Lee mu=0.062 | Lee mu=0.071")
+    for nu in (0.30, 0.24):
+        z = hertz_maximum_shear_depth_ratio(nu)
+        sz, sr = hertz_centerline_stresses(nu, z)
+        undoped = lee_coefficients(nu, 0.062, z)[3] / 2
+        nb = lee_coefficients(nu, 0.071, z)[3] / 2
+        print(f"{nu:.2f} | {z:.9f} | {abs(sz-sr)/2:.9f} | "
+              f"{undoped:.9f} | {nb:.9f}")
+
+
+def _print_results(
+    results: list[LeeResult],
+    reduced_modulus_gpa: float,
+    tip_radius_nm: float,
+    poisson_ratio: float,
+    friction_coefficient: float,
+) -> None:
+    print("Section 5.3.3: Hertz indentation and Lee scratching estimates")
+    print(f"Reduced modulus E* : {reduced_modulus_gpa:.6g} GPa")
+    print(f"Tip radius R       : {tip_radius_nm:.6g} nm")
+    print(f"Poisson ratio nu   : {poisson_ratio:.6g}")
+    print(f"Friction Q/P = mu  : {friction_coefficient:.6g}")
+    print(f"Hertz depth z/a    : {results[0].depth_ratio:.9f}")
+    print(f"Hertz tau_max/p0   : {results[0].hertz_tau_over_p0:.9f}")
+    print(f"Lee tau_max/p0     : {results[0].lee_tau_over_p0:.9f}")
+    print("These coefficients multiply p0; they are dimensionless.")
+    print(
+        "Friction increase  : "
+        f"{results[0].friction_increase_percent:.6f} %"
+    )
+    print()
+    print(
+        "Load (mN) | a (nm) | p0 (GPa) | z_max (nm) | "
+        "Hertz tau (GPa) | Lee tau (GPa)"
+    )
+    print("-" * 88)
+    for result in results:
+        print(
+            f"{result.load_mn:9.5g} | "
+            f"{result.contact_radius_nm:6.2f} | "
+            f"{result.maximum_pressure_gpa:8.5f} | "
+            f"{result.maximum_shear_depth_nm:10.2f} | "
+            f"{result.hertz_maximum_shear_gpa:15.6f} | "
+            f"{result.lee_maximum_shear_gpa:13.6f}"
+        )
+    print("\nLee stresses use the assumed Hertz depth, not a full-field sliding maximum.")
+    print("Use separate measured onset loads for indentation and scratching.")
+    print("E* must be the reduced modulus; R must be the effective contact radius.")
+
+
+def _interactive_inputs(args: argparse.Namespace) -> None:
+    """Blank responses retain displayed defaults; input units match laboratory data."""
+    text = input(f"Normal load(s) in mN, separated by spaces {args.load_mn}: ").strip()
+    if text:
+        args.load_mn = [float(x) for x in text.split()]
+    for name, label in (
+        ("modulus_gpa", "Reduced modulus E* in GPa"),
+        ("radius_nm", "Effective tip radius in nm (2 um = 2000 nm)"),
+        ("nu", "Specimen Poisson ratio"),
+        ("mu", "Scratch COF (undoped estimate 0.062; Nb estimate 0.071)"),
+    ):
+        response = input(f"{label} [{getattr(args, name)}]: ").strip()
+        if response:
+            setattr(args, name, float(response))
+
+
+def _parse_arguments() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Evaluate the low-friction Lee-Polycarpou shear stress."
+    )
+    parser.add_argument(
+        "--load-mn",
+        type=float,
+        nargs="+",
+        default=NORMAL_LOADS_MN,
+        help="One or more normal loads in mN.",
+    )
+    parser.add_argument(
+        "--modulus-gpa",
+        type=float,
+        default=REDUCED_MODULUS_GPA,
+        help="Reduced elastic modulus E* in GPa.",
+    )
+    parser.add_argument(
+        "--radius-nm",
+        type=float,
+        default=TIP_RADIUS_NM,
+        help="Effective spherical tip radius in nm.",
+    )
+    parser.add_argument(
+        "--nu",
+        type=float,
+        default=POISSON_RATIO,
+        help="Specimen Poisson ratio.",
+    )
+    parser.add_argument(
+        "--mu",
+        type=float,
+        default=None,
+        help="Force ratio Q/P, approximated by the friction coefficient.",
+    )
+    parser.add_argument("--material", choices=list(MATERIAL_FRICTION),
+                        help="Use a figure-estimated composition COF unless --mu is supplied.")
+    parser.add_argument("--interactive", action="store_true", help="Prompt for input values.")
+    parser.add_argument("--steps", action="store_true", help="Print the worked Hertz/Lee equations.")
+    parser.add_argument("--reference", action="store_true", help="Show nu=0.30 and 0.24 checks.")
+    args = parser.parse_args()
+    if args.mu is None:
+        args.mu = MATERIAL_FRICTION.get(args.material, FRICTION_COEFFICIENT)
+    return args
+
+
+def main() -> None:
+    args = _parse_arguments()
+    if args.interactive:
+        _interactive_inputs(args)
+    results = [
+        calculate_lee_shear_stress(
+            load_mn=load,
+            reduced_modulus_gpa=args.modulus_gpa,
+            tip_radius_nm=args.radius_nm,
+            poisson_ratio=args.nu,
+            friction_coefficient=args.mu,
+        )
+        for load in args.load_mn
+    ]
+    _print_results(
+        results,
+        reduced_modulus_gpa=args.modulus_gpa,
+        tip_radius_nm=args.radius_nm,
+        poisson_ratio=args.nu,
+        friction_coefficient=args.mu,
+    )
+    if args.steps:
+        print_worked_steps(args.nu, args.mu)
+    if args.reference:
+        print_reference_coefficients()
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except ValueError as error:
+        raise SystemExit(f"Input error: {error}") from error
